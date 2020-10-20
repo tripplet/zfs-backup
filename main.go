@@ -12,9 +12,6 @@ import (
 	"github.com/eiannone/keyboard"
 )
 
-const dataPool = "data"
-const backupPool = "backup/data"
-
 func main() {
 	dataDataset := flag.String("data", "", "Name of the data dataset")
 	backupDataset := flag.String("backup", "", "Name of the backup dataset")
@@ -27,28 +24,32 @@ func main() {
 		os.Exit(-1)
 	}
 
-	// Get existing snapshots
+	// Get existing snapshots from data dataset
 	dataSnapshots, err := getSnapshots(*dataDataset)
 	if err != nil {
 		os.Exit(-1)
 	}
 
+	// Get existing snapshots from backup dataset
 	backupSnapshots, err := getSnapshots(*backupDataset)
 	if err != nil {
 		os.Exit(-1)
 	}
 
 	fmt.Println("- Snapshots:")
-
 	printSnapshots(dataSnapshots, backupSnapshots)
 
 	fmt.Println()
 	fmt.Println("- Determining snapshot pair for incremental backup...")
-
 	oldSnapshot := findLatestSnapshotPair(dataSnapshots, backupSnapshots)
 
+	if oldSnapshot == "" {
+		fmt.Println("    No snapshot pair found")
+		os.Exit(-1)
+	}
+
 	if !*createSnapshot && !*noSnapshot {
-		fmt.Println("- Create new snapshot of data? (y/n)")
+		fmt.Println("- Create new snapshot of data volume? (y/n)")
 		char, _, err := keyboard.GetSingleKey()
 		if err != nil {
 			os.Exit(-1)
@@ -81,48 +82,56 @@ func main() {
 		fmt.Println("- Skipping snapshot creation")
 	}
 
-	newSnapshot := strings.Replace(dataSnapshots[len(dataSnapshots)-1], dataPool, "", 1)
-
-	if oldSnapshot == "" {
-		fmt.Printf("    No snapshot pair found")
-		os.Exit(-1)
-	}
+	newSnapshot := getSnapshotName(dataSnapshots[len(dataSnapshots)-1])
 
 	if oldSnapshot == newSnapshot {
-		fmt.Printf("    No new snapshot found")
+		fmt.Println("    No new snapshot found")
 		os.Exit(-1)
 	}
 
-	fmt.Printf("- Pair for incremental backup\n    %s => %s\n", oldSnapshot, newSnapshot)
+	fmt.Printf("- Pair for incremental backup\n       %s (old)\n    => %s (new)\n", oldSnapshot, newSnapshot)
 	fmt.Println("- Execute the following command:")
-	fmt.Println()
-
-	fmt.Printf("    zfs send -i %s%s %s%s | pv -pterb | zfs receive -F %s", *dataDataset, oldSnapshot, *dataDataset, newSnapshot, *backupDataset)
+	fmt.Printf("    zfs send -i %s@%s %s@%s | pv -pterb | zfs receive -F %s", *dataDataset, oldSnapshot, *dataDataset, newSnapshot, *backupDataset)
 	fmt.Println()
 	fmt.Println()
 
-	disk := "??"
-	cmd := exec.Command("zpool", "list", "-v", "-H", "-o", "name", "-L", *dataDataset)
+	backupBlockDevice := "??"
+	backupPool := getPoolNameFromDataset(*backupDataset)
+	cmd := exec.Command("zpool", "list", "-v", "-H", "-o", "name", "-L", backupPool)
 	cmdOut, err := cmd.CombinedOutput()
 
 	if err == nil {
 		lines := strings.Split(strings.Trim(string(cmdOut), " \t\r\n"), "\n")
 
 		// Assume the backup disk is only based on one block device
-		if len(lines) == 3 {
-			disk = strings.Split(strings.Trim(lines[2], " \t"), "\t")[0]
+		if len(lines) == 4 {
+			backupBlockDevice = strings.Split(strings.Trim(lines[2], " \t"), "\t")[0]
 
-			// Assume a single partition per disk
-			disk = strings.TrimSuffix(disk, "1")
+			lsblkCmd := exec.Command("lsblk", "-no", "pkname", fmt.Sprintf("/dev/%s", backupBlockDevice))
+			out, err := lsblkCmd.CombinedOutput()
+
+			if err != nil {
+				fmt.Printf("- Executing %s failed with: %s\n", lsblkCmd.Args, err)
+			} else {
+				backupBlockDevice = strings.Trim(string(out), " \t\r\n")
+			}
 		}
 	}
 
-	fmt.Println("- After the transfer run: ")
+	if backupBlockDevice == "??" {
+		fmt.Println("- Error determining block device:")
+		fmt.Println(string(cmdOut))
+	}
+
+	fmt.Println("- After the transfer run:")
+	fmt.Printf("    zpool sync %s\n", backupPool)
 	fmt.Println()
-	fmt.Printf("    zfs export %s\n", *backupDataset)
+
+	fmt.Println("- Before removing the backup disk run:")
+	fmt.Printf("    zpool export %s\n", backupPool)
 	fmt.Println("    sync")
-	fmt.Printf("    hdparm -y /dev/%s\n", disk)
-	fmt.Printf("    echo 1 > /sys/block/%s/device/delete\n", disk)
+	fmt.Printf("    hdparm -y /dev/%s\n", backupBlockDevice)
+	fmt.Printf("    echo 1 > /sys/block/%s/device/delete\n", backupBlockDevice)
 }
 
 func getSnapshots(volume string) ([]string, error) {
@@ -140,13 +149,12 @@ func getSnapshots(volume string) ([]string, error) {
 	return strings.Split(strings.Trim(string(out), " \t\r\n"), "\n"), nil
 }
 
-func findLatestSnapshotPair(dataSnapshots []string, backupSnapshots []string) string {
+func findLatestSnapshotPair(dataSnapshots, backupSnapshots []string) string {
 	foundSnapShot := ""
 	for dataIdx := len(dataSnapshots) - 1; dataIdx > 0; dataIdx-- {
-		snapshotName := strings.Replace(dataSnapshots[dataIdx], dataPool, "", 1)
-
+		snapshotName := getSnapshotName(dataSnapshots[dataIdx])
 		for backupIdx := len(backupSnapshots) - 1; backupIdx > 0; backupIdx-- {
-			if snapshotName == strings.Replace(backupSnapshots[backupIdx], backupPool, "", 1) {
+			if snapshotName == getSnapshotName(backupSnapshots[backupIdx]) {
 				foundSnapShot = snapshotName
 				break
 			}
@@ -159,6 +167,23 @@ func findLatestSnapshotPair(dataSnapshots []string, backupSnapshots []string) st
 	}
 
 	return foundSnapShot
+}
+
+// Get the name of the pool from a dataset or snapshot
+//
+// Examples:
+// data/system@snapshot123 => data
+// data123 => data123
+// data1/test => data1
+func getPoolNameFromDataset(dataset string) string {
+	return strings.SplitN(dataset, "/", 2)[0]
+}
+
+// Get the name of the snapshot without the leading dataset
+//
+// Example: data@snapshot123 => snapshot123
+func getSnapshotName(dataset string) string {
+	return strings.SplitN(dataset, "@", 2)[1]
 }
 
 func printSnapshots(dataSnapshots []string, backupSnapshots []string) {
