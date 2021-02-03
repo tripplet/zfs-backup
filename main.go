@@ -124,8 +124,8 @@ func main() {
 		lines := strings.Split(strings.Trim(string(cmdOut), " \t\r\n"), "\n")
 
 		// Assume the backup disk is only based on one block device
-		if len(lines) == 4 {
-			backupBlockDevice = strings.Split(strings.Trim(lines[2], " \t"), "\t")[0]
+		if len(lines) == 2 {
+			backupBlockDevice = strings.Split(strings.Trim(lines[1], " \t"), "\t")[0]
 
 			lsblkCmd := exec.Command("lsblk", "-no", "pkname", fmt.Sprintf("/dev/%s", backupBlockDevice))
 			out, err := lsblkCmd.CombinedOutput()
