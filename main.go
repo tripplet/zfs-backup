@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -19,12 +20,31 @@ func main() {
 	noSnapshot := flag.Bool("no-snapshot", false, "Do not create new snapshot")
 	flag.Parse()
 
+	// Get existing snapshots from data dataset
+	id_cmd := exec.Command("id", "-u")
+	output, err := id_cmd.Output()
+
+	if err != nil {
+		fmt.Println("Error determining uid:", err)
+		os.Exit(-1)
+	}
+
+	uid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		fmt.Println("Error parsing uid:", err)
+		os.Exit(-1)
+	}
+
+	if uid != 0 {
+		fmt.Println("This program must be run as root! (sudo)")
+		os.Exit(-1)
+	}
+
 	if *dataDataset == "" || *backupDataset == "" {
 		flag.PrintDefaults()
 		os.Exit(-1)
 	}
 
-	// Get existing snapshots from data dataset
 	dataSnapshots, err := getSnapshots(*dataDataset)
 	if err != nil {
 		os.Exit(-1)
