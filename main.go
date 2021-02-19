@@ -20,24 +20,11 @@ func main() {
 	noSnapshot := flag.Bool("no-snapshot", false, "Do not create new snapshot")
 	flag.Parse()
 
-	// Get existing snapshots from data dataset
-	id_cmd := exec.Command("id", "-u")
-	output, err := id_cmd.Output()
-
+    isRoot, err := isRootUser()
 	if err != nil {
-		fmt.Println("Error determining uid:", err)
-		os.Exit(-1)
-	}
-
-	uid, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		fmt.Println("Error parsing uid:", err)
-		os.Exit(-1)
-	}
-
-	if uid != 0 {
-		fmt.Println("This program must be run as root! (sudo)")
-		os.Exit(-1)
+		exitWithError("Error checking for root:", err)
+	} else if !isRoot {
+		exitWithError("This program must be run as root! (sudo)")
 	}
 
 	if *dataDataset == "" || *backupDataset == "" {
@@ -45,15 +32,16 @@ func main() {
 		os.Exit(-1)
 	}
 
+	// Get existing snapshots from data dataset
 	dataSnapshots, err := getSnapshots(*dataDataset)
 	if err != nil {
-		os.Exit(-1)
+		exitWithError(err)
 	}
 
 	// Get existing snapshots from backup dataset
 	backupSnapshots, err := getSnapshots(*backupDataset)
 	if err != nil {
-		os.Exit(-1)
+		exitWithError(err)
 	}
 
 	fmt.Println("- Snapshots:")
@@ -64,15 +52,14 @@ func main() {
 	oldSnapshot := findLatestSnapshotPair(dataSnapshots, backupSnapshots)
 
 	if oldSnapshot == "" {
-		fmt.Println("    No snapshot pair found")
-		os.Exit(-1)
+		exitWithError("    No snapshot pair found")
 	}
 
 	if !*createSnapshot && !*noSnapshot {
 		fmt.Println("- Create new snapshot of data volume? (y/n)")
 		char, _, err := keyboard.GetSingleKey()
 		if err != nil {
-			os.Exit(-1)
+			exitWithError(err)
 		}
 
 		if char == 'y' || char == 'Y' {
@@ -87,8 +74,7 @@ func main() {
 		fmt.Printf("    $ %s\n", cmd.Args)
 
 		if cmd.Run() != nil {
-			fmt.Printf("    Executing %s failed with: %s\n", cmd.Args, err)
-			os.Exit(-1)
+			exitWithError(fmt.Sprintf("    Executing %s failed with: %s\n", cmd.Args, err))
 		} else {
 			fmt.Println("    Done")
 		}
@@ -96,7 +82,7 @@ func main() {
 		// Get existing snapshots again
 		dataSnapshots, err = getSnapshots(*dataDataset)
 		if err != nil {
-			os.Exit(-1)
+			exitWithError(err)
 		}
 	} else {
 		fmt.Println("- Skipping snapshot creation")
@@ -105,8 +91,7 @@ func main() {
 	newSnapshot := getSnapshotName(dataSnapshots[len(dataSnapshots)-1])
 
 	if oldSnapshot == newSnapshot {
-		fmt.Println("    No new snapshot found")
-		os.Exit(-1)
+		exitWithError("    No new snapshot found")
 	}
 
 	fmt.Printf("- Pair for incremental backup\n       %s (old)\n    => %s (new)\n", oldSnapshot, newSnapshot)
@@ -162,8 +147,7 @@ func getSnapshots(volume string) ([]string, error) {
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
-		fmt.Printf("- Executing %s failed with: %s\n", cmd.Args, err)
-		return nil, err
+		return nil, fmt.Errorf("- Executing %s failed with: %s\n", cmd.Args, err)
 	}
 
 	return strings.Split(strings.Trim(string(out), " \t\r\n"), "\n"), nil
@@ -225,4 +209,25 @@ func printSnapshots(dataSnapshots []string, backupSnapshots []string) {
 	}
 
 	w.Flush()
+}
+
+func isRootUser() (bool, error) {
+	id_cmd := exec.Command("id", "-u")
+
+	output, err := id_cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("Error determining uid:", err)
+	}
+
+	uid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return false, fmt.Errorf("Error parsing uid:", err)
+	}
+
+	return uid == 0, nil
+}
+
+func exitWithError(v ...interface{}) {
+	fmt.Println(v...)
+	os.Exit(-1)
 }
