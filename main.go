@@ -20,7 +20,7 @@ func main() {
 	noSnapshot := flag.Bool("no-snapshot", false, "Do not create new snapshot")
 	flag.Parse()
 
-    isRoot, err := isRootUser()
+	isRoot, err := isRootUser()
 	if err != nil {
 		exitWithError("Error checking for root:", err)
 	} else if !isRoot {
@@ -33,19 +33,23 @@ func main() {
 	}
 
 	// Get existing snapshots from data dataset
-	dataSnapshots, err := getSnapshots(*dataDataset)
-	if err != nil {
-		exitWithError(err)
+	dataSnapshots, dataError := getSnapshots(*dataDataset)
+	if dataError != nil {
+		fmt.Println(dataError)
 	}
 
 	// Get existing snapshots from backup dataset
-	backupSnapshots, err := getSnapshots(*backupDataset)
-	if err != nil {
-		exitWithError(err)
+	backupSnapshots, backupError := getSnapshots(*backupDataset)
+	if backupError != nil {
+		fmt.Println(backupError)
 	}
 
 	fmt.Println("- Snapshots:")
 	printSnapshots(dataSnapshots, backupSnapshots)
+
+	if dataError != nil || backupError != nil {
+		os.Exit(-1)
+	}
 
 	fmt.Println()
 	fmt.Println("- Determining snapshot pair for incremental backup...")
@@ -53,6 +57,8 @@ func main() {
 
 	if oldSnapshot == "" {
 		exitWithError("    No snapshot pair found")
+	} else {
+		fmt.Println("    found")
 	}
 
 	if !*createSnapshot && !*noSnapshot {
@@ -95,15 +101,32 @@ func main() {
 	}
 
 	fmt.Printf("- Pair for incremental backup\n       %s (old)\n    => %s (new)\n", oldSnapshot, newSnapshot)
+
+	cmd := exec.Command("zfs", "send", "--dryrun", "--parsable", "-i", fmt.Sprintf("%s@%s", *dataDataset, oldSnapshot), fmt.Sprintf("%s@%s", *dataDataset, newSnapshot))
+	cmdOut, err := cmd.CombinedOutput()
+	if err != nil {
+		exitWithError(err)
+	}
+
+	estimatedSizeLine := strings.Split(strings.Trim(string(cmdOut), " \t\r\n"), "\n")[1]
+	estimatedSizeStr := strings.Trim(strings.Split(estimatedSizeLine, "\t")[1], " \t")
+	estimatedSize, err := strconv.ParseInt(estimatedSizeStr, 10, 64)
+	if err != nil {
+		exitWithError(err)
+	}
+
 	fmt.Println("- Execute the following command:")
-	fmt.Printf("    zfs send -i %s@%s %s@%s | pv -pterb | zfs receive -F %s", *dataDataset, oldSnapshot, *dataDataset, newSnapshot, *backupDataset)
+	fmt.Printf("    zfs send -i %s@%s %s@%s | pv -pterb -s %d | zfs receive -F %s", *dataDataset, oldSnapshot, *dataDataset, newSnapshot, estimatedSize, *backupDataset)
+	fmt.Println()
+
+	fmt.Printf("    (estimated size %s)", toHumanByteFormat(estimatedSize))
 	fmt.Println()
 	fmt.Println()
 
 	backupBlockDevice := "??"
 	backupPool := getPoolNameFromDataset(*backupDataset)
-	cmd := exec.Command("zpool", "list", "-v", "-H", "-o", "name", "-L", backupPool)
-	cmdOut, err := cmd.CombinedOutput()
+	cmd = exec.Command("zpool", "list", "-v", "-H", "-o", "name", "-L", backupPool)
+	cmdOut, err = cmd.CombinedOutput()
 
 	if err == nil {
 		lines := strings.Split(strings.Trim(string(cmdOut), " \t\r\n"), "\n")
@@ -151,6 +174,20 @@ func getSnapshots(volume string) ([]string, error) {
 	}
 
 	return strings.Split(strings.Trim(string(out), " \t\r\n"), "\n"), nil
+}
+
+func toHumanByteFormat(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB",
+		float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func findLatestSnapshotPair(dataSnapshots, backupSnapshots []string) string {
