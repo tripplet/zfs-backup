@@ -32,6 +32,10 @@ func main() {
 		os.Exit(-1)
 	}
 
+    if *dataDataset == *backupDataset {
+		exitWithError("Dataset 'data' and 'backup' must be different") 
+    }
+
 	// Get existing snapshots from data dataset
 	dataSnapshots, dataError := getSnapshots(*dataDataset)
 	if dataError != nil {
@@ -158,7 +162,7 @@ func main() {
 	fmt.Println("- Before removing the backup disk run:")
 	fmt.Printf("    zpool export %s\n", backupPool)
 	fmt.Println("    sync")
-	fmt.Printf("    hdparm -y /dev/%s\n", backupBlockDevice)
+	fmt.Printf("    hdparm -Y /dev/%s\n", backupBlockDevice)
 	fmt.Printf("    echo 1 > /sys/block/%s/device/delete\n", backupBlockDevice)
 }
 
